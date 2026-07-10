@@ -142,43 +142,63 @@ function CommandRow({ pid, c, onRun, onStop, conflict, onResolve, onDismiss }) {
   );
 }
 
-function ProjectCard({ p, onRun, onStop, onEdit, conflicts, onResolve, onDismiss }) {
+function ProjectCard({ p, onRun, onStop, onEdit, conflicts, onResolve, onDismiss, onToggleFav, onToggleHide, onToggleCollapse, onTagClick }) {
   const runningCount = p.commands.filter(c => c.running).length;
+  const collapsed = !!p.collapsed;
   return (
-    <div className={`strip ${runningCount ? 'running' : ''}`}>
+    <div className={`strip ${runningCount ? 'running' : ''} ${p.hidden ? 'is-hidden' : ''}`}>
       <div className="proj-head">
         <span className={`lamp ${runningCount ? 'on' : ''}`} />
-        <div className="identity">
-          <div className="name">{p.name}{runningCount ? <span className="run-badge">{runningCount} running</span> : ''}</div>
+        <div className="identity clickable" onClick={() => onToggleCollapse(p)} title={collapsed ? 'Expand commands' : 'Collapse commands'}>
+          <div className="name">
+            <svg className={`chev ${collapsed ? '' : 'open'}`} width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {p.name}
+            {p.category ? <span className="cat-tag">{p.category}</span> : ''}
+            {runningCount ? <span className="run-badge">{runningCount} running</span> : ''}
+            {collapsed ? <span className="cmd-count">{p.commands.length} command{p.commands.length === 1 ? '' : 's'}</span> : ''}
+          </div>
           <div className="path" title={p.cwd}>{p.cwd}</div>
+          {p.tags && p.tags.length > 0 && (
+            <div className="tag-row">
+              {p.tags.map(t => <button key={t} className="tag" title={`Filter by #${t}`} onClick={(e) => { e.stopPropagation(); onTagClick(t); }}>#{t}</button>)}
+            </div>
+          )}
         </div>
         <div className="actions">
+          <button className={`iconbtn star ${p.favorite ? 'on' : ''}`} title={p.favorite ? 'Unfavorite' : 'Favorite'} onClick={() => onToggleFav(p)}>{p.favorite ? '★' : '☆'}</button>
+          <button className="iconbtn" title={p.hidden ? 'Unhide' : 'Hide'} onClick={() => onToggleHide(p)}>{p.hidden ? 'Unhide' : 'Hide'}</button>
           <button className="iconbtn" title="Edit project & commands" onClick={() => onEdit(p)}>Edit</button>
         </div>
       </div>
-      <div className="cmd-list">
-        {p.commands.length === 0 ? (
-          <div className="no-cmds">No commands yet — <button className="linkbtn" onClick={() => onEdit(p)}>add one</button>.</div>
-        ) : p.commands.map(c => (
-          <CommandRow
-            key={c.id}
-            pid={p.id}
-            c={c}
-            onRun={onRun}
-            onStop={onStop}
-            conflict={conflicts[`${p.id}::${c.id}`]}
-            onResolve={onResolve}
-            onDismiss={onDismiss}
-          />
-        ))}
-      </div>
+      {!collapsed && (
+        <div className="cmd-list">
+          {p.commands.length === 0 ? (
+            <div className="no-cmds">No commands yet — <button className="linkbtn" onClick={() => onEdit(p)}>add one</button>.</div>
+          ) : p.commands.map(c => (
+            <CommandRow
+              key={c.id}
+              pid={p.id}
+              c={c}
+              onRun={onRun}
+              onStop={onStop}
+              conflict={conflicts[`${p.id}::${c.id}`]}
+              onResolve={onResolve}
+              onDismiss={onDismiss}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function ProjectModal({ initial, onClose, onSave, onDelete }) {
+function ProjectModal({ initial, onClose, onSave, onDelete, categories }) {
   const [name, setName] = useState(initial ? initial.name : '');
   const [cwd, setCwd] = useState(initial ? initial.cwd : '');
+  const [category, setCategory] = useState(initial ? initial.category || '' : '');
+  const [tags, setTags] = useState(initial ? (initial.tags || []).join(', ') : '');
   const [cmds, setCmds] = useState(() =>
     initial && initial.commands && initial.commands.length
       ? initial.commands.map(c => ({ label: c.label, cmd: c.cmd, port: c.port || '' }))
@@ -211,6 +231,8 @@ function ProjectModal({ initial, onClose, onSave, onDelete }) {
   const valid = name.trim() && cwd.trim() && validCmds.length > 0;
   const save = () => onSave({
     name, cwd,
+    category: category.trim(),
+    tags: tags.split(',').map(t => t.trim()).filter(Boolean),
     commands: validCmds.map(c => ({ label: c.label.trim(), cmd: c.cmd.trim(), port: c.port })),
   });
 
@@ -226,6 +248,19 @@ function ProjectModal({ initial, onClose, onSave, onDelete }) {
         <div className="field">
           <label>Folder (working directory)</label>
           <input value={cwd} onChange={e => setCwd(e.target.value)} placeholder="C:\dev\WebQMS" />
+        </div>
+        <div className="field split">
+          <div>
+            <label>Category</label>
+            <input value={category} onChange={e => setCategory(e.target.value)} placeholder="Work / Client / Personal" list="cat-list" />
+            <datalist id="cat-list">
+              {(categories || []).map(c => <option key={c} value={c} />)}
+            </datalist>
+          </div>
+          <div>
+            <label>Tags (comma-separated)</label>
+            <input value={tags} onChange={e => setTags(e.target.value)} placeholder="frontend, vite, client-x" />
+          </div>
         </div>
 
         <div className="cmds-editor">
@@ -324,6 +359,9 @@ function App() {
   const [modal, setModal] = useState(null);        // {type:'add'|'edit', project?}
   const [scan, setScan] = useState(false);
   const [toast, setToast] = useState(null);
+  const [view, setView] = useState('all');          // all | fav | hidden
+  const [cat, setCat] = useState('');                // category filter ('' = any)
+  const [tag, setTag] = useState('');                // tag filter ('' = any)
 
   const flash = (text, err) => { setToast({ text, err }); setTimeout(() => setToast(null), 2600); };
 
@@ -380,7 +418,25 @@ function App() {
     refresh();
   };
 
+  const toggleFav = async (p) => { await api.update(p.id, { favorite: !p.favorite }); refresh(); };
+  const toggleHide = async (p) => { await api.update(p.id, { hidden: !p.hidden }); refresh(); };
+  const toggleCollapse = async (p) => {
+    const next = !p.collapsed;
+    // Optimistic: flip immediately, then persist so it survives refresh/restart.
+    setProjects(prev => prev.map(x => (x.id === p.id ? { ...x, collapsed: next } : x)));
+    await api.update(p.id, { collapsed: next });
+    refresh();
+  };
+
   const liveCount = projects.reduce((n, p) => n + p.commands.filter(c => c.running).length, 0);
+  const categories = [...new Set(projects.map(p => p.category).filter(Boolean))].sort();
+  const counts = {
+    all: projects.filter(p => !p.hidden).length,
+    fav: projects.filter(p => p.favorite && !p.hidden).length,
+    hidden: projects.filter(p => p.hidden).length,
+  };
+  const inView = (p) => view === 'hidden' ? p.hidden : view === 'fav' ? (p.favorite && !p.hidden) : !p.hidden;
+  const visible = projects.filter(p => inView(p) && (!cat || p.category === cat) && (!tag || (p.tags || []).includes(tag)));
 
   return (
     <div className="wrap">
@@ -395,14 +451,34 @@ function App() {
         </div>
       </header>
 
+      {projects.length > 0 && (
+        <div className="filterbar">
+          {[['all', 'All'], ['fav', 'Fav'], ['hidden', 'Hidden']].map(([k, lbl]) => (
+            <button key={k} className={`filt ${view === k ? 'active' : ''}`} onClick={() => setView(k)}>
+              {lbl}<span className="fc">{counts[k]}</span>
+            </button>
+          ))}
+          {categories.length > 0 && <span className="filt-sep" />}
+          {categories.map(c => (
+            <button key={c} className={`filt cat ${cat === c ? 'active' : ''}`} onClick={() => setCat(cat === c ? '' : c)}>{c}</button>
+          ))}
+          {tag && <button className="filt tagf active" onClick={() => setTag('')}>#{tag} ✕</button>}
+        </div>
+      )}
+
       {projects.length === 0 ? (
         <div className="empty">
           <h3>No projects yet</h3>
           <p>Add one by hand, or scan a folder like <code>C:\dev</code> to pull them all in.</p>
         </div>
+      ) : visible.length === 0 ? (
+        <div className="empty">
+          <h3>Nothing here</h3>
+          <p>No projects match this filter.</p>
+        </div>
       ) : (
         <div className="board">
-          {projects.map(p => (
+          {visible.map(p => (
             <ProjectCard
               key={p.id}
               p={p}
@@ -412,6 +488,10 @@ function App() {
               conflicts={conflicts}
               onResolve={resolve}
               onDismiss={dismiss}
+              onToggleFav={toggleFav}
+              onToggleHide={toggleHide}
+              onToggleCollapse={toggleCollapse}
+              onTagClick={setTag}
             />
           ))}
         </div>
@@ -423,6 +503,7 @@ function App() {
           onClose={() => setModal(null)}
           onSave={save}
           onDelete={modal.type === 'edit' ? del : undefined}
+          categories={categories}
         />
       )}
       {scan && <ScanModal onClose={() => setScan(false)} onImport={importScan} />}

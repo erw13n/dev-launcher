@@ -73,7 +73,17 @@ function normalizeProject(p, taken) {
   const commands = Array.isArray(p.commands)
     ? normalizeCommands(p.commands)
     : normalizeCommands(p.cmd ? [{ id: 'run', label: p.cmd, cmd: p.cmd, port: p.port || null }] : []);
-  return { id, name: String(p.name || '').trim(), cwd: String(p.cwd || '').trim(), commands };
+  return {
+    id,
+    name: String(p.name || '').trim(),
+    cwd: String(p.cwd || '').trim(),
+    commands,
+    category: String(p.category || '').trim(),
+    tags: Array.isArray(p.tags) ? [...new Set(p.tags.map(t => String(t).trim()).filter(Boolean))] : [],
+    favorite: !!p.favorite,
+    hidden: !!p.hidden,
+    collapsed: !!p.collapsed,
+  };
 }
 function loadRegistry() {
   let raw;
@@ -189,11 +199,11 @@ app.get('/api/projects', async (req, res) => {
 });
 
 app.post('/api/projects', (req, res) => {
-  const { name, cwd, commands } = req.body || {};
+  const { name, cwd, commands, category, tags, favorite, hidden, collapsed } = req.body || {};
   if (!name || !cwd) return res.status(400).json({ error: 'name and cwd are required' });
   const list = loadRegistry();
   const taken = new Set(list.map(p => p.id));
-  const project = normalizeProject({ name, cwd, commands }, taken);
+  const project = normalizeProject({ name, cwd, commands, category, tags, favorite, hidden, collapsed }, taken);
   list.push(project);
   saveRegistry(list);
   res.json(project);
@@ -203,9 +213,14 @@ app.put('/api/projects/:id', (req, res) => {
   const list = loadRegistry();
   const p = findProject(list, req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  const { name, cwd, commands } = req.body || {};
+  const { name, cwd, commands, category, tags, favorite, hidden, collapsed } = req.body || {};
   if (name !== undefined) p.name = String(name).trim();
   if (cwd !== undefined) p.cwd = String(cwd).trim();
+  if (category !== undefined) p.category = String(category).trim();
+  if (tags !== undefined) p.tags = Array.isArray(tags) ? [...new Set(tags.map(t => String(t).trim()).filter(Boolean))] : [];
+  if (favorite !== undefined) p.favorite = !!favorite;
+  if (hidden !== undefined) p.hidden = !!hidden;
+  if (collapsed !== undefined) p.collapsed = !!collapsed;
   if (commands !== undefined) {
     const next = normalizeCommands(commands);
     // Stop any running command that was removed or renamed out of existence.
