@@ -4,6 +4,8 @@ A tiny local control panel for your scattered dev projects. One list, a Run/Stop
 button per project, live logs, and port-conflict handling for when three projects
 all want `:5173`.
 
+![Dev Launcher dashboard](assets/dashboard.png)
+
 ## Run it
 
 ```bash

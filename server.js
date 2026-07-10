@@ -32,26 +32,61 @@ const PORT = process.env.PORT || 9000;
 const REGISTRY = path.join(__dirname, 'registry.json');
 const MAX_LOG_LINES = 600;
 
-// id -> { proc, logs:[], clients:Set<res>, startedAt, alive }
+// A "session" is one running command. Keyed by `${projectId}::${commandId}`.
+// session: { proc, logs:[], startedAt, alive }  (replaced on every run)
 const sessions = new Map();
+// key -> Set<res>  (log viewers; persists across runs so re-runs keep streaming)
+const subscribers = new Map();
+const sk = (pid, cid) => `${pid}::${cid}`;
+function subsFor(key) {
+  let s = subscribers.get(key);
+  if (!s) { s = new Set(); subscribers.set(key, s); }
+  return s;
+}
+const isRunning = (key) => !!(sessions.get(key) && sessions.get(key).alive);
 
-const isRunning = (id) => !!(sessions.get(id) && sessions.get(id).alive);
-
+// ---- Registry (normalized to the multi-command shape) ----
+function slug(s, fallback) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 28) || fallback;
+}
+function uniqueId(base, taken) {
+  let id = base, n = 2;
+  while (taken.has(id)) id = `${base}-${n++}`;
+  taken.add(id);
+  return id;
+}
+function normalizeCommands(cmds) {
+  const out = [], taken = new Set();
+  for (const c of (cmds || [])) {
+    const cmd = String(c.cmd || '').trim();
+    if (!cmd) continue;
+    const label = String(c.label || '').trim() || cmd;
+    const id = uniqueId(c.id && !taken.has(c.id) ? c.id : slug(label, 'cmd'), taken);
+    out.push({ id, label, cmd, port: c.port ? Number(c.port) : null });
+  }
+  return out;
+}
+function normalizeProject(p, taken) {
+  const id = p.id || uniqueId(slug(p.name, 'proj'), taken);
+  taken.add(id);
+  // Migrate the legacy single-command shape ({ cmd, port }) transparently.
+  const commands = Array.isArray(p.commands)
+    ? normalizeCommands(p.commands)
+    : normalizeCommands(p.cmd ? [{ id: 'run', label: p.cmd, cmd: p.cmd, port: p.port || null }] : []);
+  return { id, name: String(p.name || '').trim(), cwd: String(p.cwd || '').trim(), commands };
+}
 function loadRegistry() {
-  try { return JSON.parse(fs.readFileSync(REGISTRY, 'utf8')); }
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(REGISTRY, 'utf8')); }
   catch { return []; }
+  if (!Array.isArray(raw)) return [];
+  const taken = new Set(raw.map(p => p.id).filter(Boolean));
+  return raw.map(p => normalizeProject(p, taken));
 }
 function saveRegistry(list) {
   fs.writeFileSync(REGISTRY, JSON.stringify(list, null, 2));
 }
-function slug(name) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proj';
-}
-function uniqueId(base, list) {
-  let id = base, n = 2;
-  while (list.some(p => p.id === id)) id = `${base}-${n++}`;
-  return id;
-}
+function findProject(list, id) { return list.find(p => p.id === id); }
 
 // Is something already listening on this port?
 function isPortInUse(port) {
@@ -68,38 +103,97 @@ function isPortInUse(port) {
   });
 }
 
+// Which package manager does this folder use? Prefer the explicit
+// `packageManager` field (corepack), then fall back to lockfiles.
+function detectPackageManager(dir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    const name = String(pkg.packageManager || '').split('@')[0];
+    if (['npm', 'pnpm', 'yarn', 'bun'].includes(name)) return name;
+  } catch {}
+  const has = (f) => { try { return fs.existsSync(path.join(dir, f)); } catch { return false; } };
+  if (has('bun.lockb') || has('bun.lock')) return 'bun';
+  if (has('pnpm-lock.yaml')) return 'pnpm';
+  if (has('yarn.lock')) return 'yarn';
+  if (has('package-lock.json')) return 'npm';
+  return 'npm';
+}
+// Format "run this script" for the given package manager.
+function scriptCmd(pm, script) {
+  if (pm === 'pnpm') return `pnpm ${script}`;
+  if (pm === 'yarn') return `yarn ${script}`;
+  if (pm === 'bun') return `bun run ${script}`;
+  return `npm run ${script}`;
+}
+
+// Detect runnable commands in a folder: every package.json script + a .csproj.
+function detectCommands(dir) {
+  const cmds = [];
+  const pm = detectPackageManager(dir);
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    for (const name of Object.keys(pkg.scripts || {})) {
+      cmds.push({ label: name, cmd: scriptCmd(pm, name), port: null });
+    }
+  } catch {}
+  try {
+    if (fs.readdirSync(dir).some(f => f.endsWith('.csproj'))) {
+      cmds.push({ label: 'dotnet run', cmd: 'dotnet run', port: null });
+    }
+  } catch {}
+  return { pm, cmds };
+}
+// A sensible default single command for bulk-scan (user can Detect the rest later).
+function primaryCommands(dir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    const s = pkg.scripts || {};
+    const pm = detectPackageManager(dir);
+    const pick = s.dev ? 'dev' : s.start ? 'start' : s.serve ? 'serve' : Object.keys(s)[0];
+    const commands = pick ? [{ label: pick, cmd: scriptCmd(pm, pick), port: null }] : [];
+    return { name: pkg.name || path.basename(dir), commands };
+  } catch { return null; }
+}
+
 // ---- Projects ----
 app.get('/api/projects', async (req, res) => {
   const list = loadRegistry();
-  const out = [];
-  for (const p of list) {
-    const running = isRunning(p.id);
-    const portBusy = await isPortInUse(p.port);
-    const owner = list.find(q => q.id !== p.id && q.port && q.port === p.port && isRunning(q.id));
-    const s = sessions.get(p.id);
-    out.push({
-      ...p,
-      running,
-      portBusy,
-      portOwner: owner ? owner.name : null,
-      startedAt: running && s ? s.startedAt : null,
-      exited: !!(s && !s.alive),
-    });
+
+  // Which ports are currently held by a running command (for ownership labels)?
+  const runningPorts = [];
+  for (const p of list) for (const c of p.commands) {
+    if (c.port && isRunning(sk(p.id, c.id))) runningPorts.push({ key: sk(p.id, c.id), name: p.name, label: c.label, port: c.port });
   }
+  // Probe each distinct configured port once.
+  const ports = [...new Set(list.flatMap(p => p.commands.map(c => c.port).filter(Boolean)))];
+  const busy = new Map(await Promise.all(ports.map(async pt => [pt, await isPortInUse(pt)])));
+
+  const out = list.map(p => ({
+    ...p,
+    commands: p.commands.map(c => {
+      const key = sk(p.id, c.id);
+      const running = isRunning(key);
+      const s = sessions.get(key);
+      const owner = c.port ? runningPorts.find(r => r.port === c.port && r.key !== key) : null;
+      return {
+        ...c,
+        running,
+        portBusy: c.port ? !!busy.get(c.port) : false,
+        portOwner: owner ? `${owner.name}${owner.label ? ' · ' + owner.label : ''}` : null,
+        startedAt: running && s ? s.startedAt : null,
+        exited: !!(s && !s.alive),
+      };
+    }),
+  }));
   res.json(out);
 });
 
 app.post('/api/projects', (req, res) => {
-  const { name, cwd, cmd, port } = req.body || {};
-  if (!name || !cwd || !cmd) return res.status(400).json({ error: 'name, cwd and cmd are required' });
+  const { name, cwd, commands } = req.body || {};
+  if (!name || !cwd) return res.status(400).json({ error: 'name and cwd are required' });
   const list = loadRegistry();
-  const project = {
-    id: uniqueId(slug(name), list),
-    name: String(name).trim(),
-    cwd: String(cwd).trim(),
-    cmd: String(cmd).trim(),
-    port: port ? Number(port) : null,
-  };
+  const taken = new Set(list.map(p => p.id));
+  const project = normalizeProject({ name, cwd, commands }, taken);
   list.push(project);
   saveRegistry(list);
   res.json(project);
@@ -107,85 +201,117 @@ app.post('/api/projects', (req, res) => {
 
 app.put('/api/projects/:id', (req, res) => {
   const list = loadRegistry();
-  const p = list.find(x => x.id === req.params.id);
+  const p = findProject(list, req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  const { name, cwd, cmd, port } = req.body || {};
+  const { name, cwd, commands } = req.body || {};
   if (name !== undefined) p.name = String(name).trim();
   if (cwd !== undefined) p.cwd = String(cwd).trim();
-  if (cmd !== undefined) p.cmd = String(cmd).trim();
-  if (port !== undefined) p.port = port ? Number(port) : null;
+  if (commands !== undefined) {
+    const next = normalizeCommands(commands);
+    // Stop any running command that was removed or renamed out of existence.
+    const keepIds = new Set(next.map(c => c.id));
+    for (const c of p.commands) {
+      const key = sk(p.id, c.id);
+      if (!keepIds.has(c.id) && isRunning(key)) {
+        const s = sessions.get(key);
+        if (s && s.proc && s.proc.pid) treeKill(s.proc.pid, 'SIGTERM');
+      }
+    }
+    p.commands = next;
+  }
   saveRegistry(list);
   res.json(p);
 });
 
 app.delete('/api/projects/:id', (req, res) => {
   const list = loadRegistry();
-  const p = list.find(x => x.id === req.params.id);
+  const p = findProject(list, req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (isRunning(p.id)) {
-    const s = sessions.get(p.id);
-    if (s && s.proc && s.proc.pid) treeKill(s.proc.pid, 'SIGTERM');
+  for (const c of p.commands) {
+    const key = sk(p.id, c.id);
+    const s = sessions.get(key);
+    if (s && s.alive && s.proc && s.proc.pid) treeKill(s.proc.pid, 'SIGTERM');
+    sessions.delete(key);
+    subscribers.delete(key);
   }
-  sessions.delete(p.id);
   saveRegistry(list.filter(x => x.id !== p.id));
   res.json({ ok: true });
 });
 
-// ---- Run / Stop ----
-app.post('/api/projects/:id/run', async (req, res) => {
+// Detect commands in a folder (for the Add/Edit form).
+app.post('/api/detect', (req, res) => {
+  const cwd = (req.body && req.body.cwd ? String(req.body.cwd) : '').trim();
+  if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'Folder not found' });
+  const { pm, cmds } = detectCommands(cwd);
+  res.json({ pm, commands: cmds });
+});
+
+// ---- Run / Stop (per command) ----
+app.post('/api/projects/:id/commands/:cid/run', async (req, res) => {
   const list = loadRegistry();
-  const p = list.find(x => x.id === req.params.id);
+  const p = findProject(list, req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (isRunning(p.id)) return res.status(409).json({ error: 'already_running' });
+  const c = p.commands.find(x => x.id === req.params.cid);
+  if (!c) return res.status(404).json({ error: 'Command not found' });
+  const key = sk(p.id, c.id);
+  if (isRunning(key)) return res.status(409).json({ error: 'already_running' });
 
   if (!fs.existsSync(p.cwd)) {
     return res.status(400).json({ error: 'bad_cwd', detail: `Folder not found: ${p.cwd}` });
   }
 
   // Guard against port collisions unless the caller forces it.
-  if (p.port && !req.query.force) {
-    if (await isPortInUse(p.port)) {
-      const owner = list.find(q => q.id !== p.id && q.port === p.port && isRunning(q.id));
-      return res.status(409).json({ error: 'port_in_use', port: p.port, owner: owner ? owner.name : null });
+  if (c.port && !req.query.force && await isPortInUse(c.port)) {
+    let owner = null;
+    for (const q of list) for (const qc of q.commands) {
+      if (qc.port === c.port && sk(q.id, qc.id) !== key && isRunning(sk(q.id, qc.id))) {
+        owner = `${q.name}${qc.label ? ' · ' + qc.label : ''}`;
+      }
     }
+    return res.status(409).json({ error: 'port_in_use', port: c.port, owner });
   }
 
   let proc;
   try {
-    proc = spawn(p.cmd, { cwd: p.cwd, shell: true, windowsHide: true });
+    proc = spawn(c.cmd, { cwd: p.cwd, shell: true, windowsHide: true });
   } catch (e) {
     return res.status(500).json({ error: 'spawn_failed', detail: String(e) });
   }
 
-  const entry = { proc, logs: [], clients: new Set(), startedAt: Date.now(), alive: true };
-  sessions.set(p.id, entry);
+  const entry = { proc, logs: [], startedAt: Date.now(), alive: true };
+  sessions.set(key, entry);
+
+  const subs = subsFor(key);
+  // Tell any open log viewers this is a fresh run so they clear stale output.
+  for (const cl of subs) cl.write(`event: reset\ndata: 1\n\n`);
 
   const push = (text, stream) => {
     const line = { t: Date.now(), stream, text: text.toString() };
     entry.logs.push(line);
     if (entry.logs.length > MAX_LOG_LINES) entry.logs.shift();
-    for (const c of entry.clients) c.write(`data: ${JSON.stringify(line)}\n\n`);
+    for (const cl of subs) cl.write(`data: ${JSON.stringify(line)}\n\n`);
   };
 
-  push(`$ ${p.cmd}   (in ${p.cwd})\n`, 'sys');
+  push(`$ ${c.cmd}   (in ${p.cwd})\n`, 'sys');
   proc.stdout.on('data', d => push(d, 'out'));
   proc.stderr.on('data', d => push(d, 'err'));
   proc.on('error', (e) => {
     entry.alive = false;
     push(`\n[launcher] failed to start: ${e.message}\n`, 'err');
-    for (const c of entry.clients) c.write(`event: exit\ndata: -1\n\n`);
+    for (const cl of subs) cl.write(`event: exit\ndata: -1\n\n`);
   });
   proc.on('exit', (code, signal) => {
     entry.alive = false;
     push(`\n— process exited (${signal ? 'signal ' + signal : 'code ' + code}) —\n`, 'sys');
-    for (const c of entry.clients) c.write(`event: exit\ndata: ${code}\n\n`);
+    for (const cl of subs) cl.write(`event: exit\ndata: ${code}\n\n`);
   });
 
   res.json({ ok: true });
 });
 
-app.post('/api/projects/:id/stop', (req, res) => {
-  const entry = sessions.get(req.params.id);
+app.post('/api/projects/:id/commands/:cid/stop', (req, res) => {
+  const key = sk(req.params.id, req.params.cid);
+  const entry = sessions.get(key);
   if (!entry || !entry.alive) return res.status(404).json({ error: 'not_running' });
   treeKill(entry.proc.pid, 'SIGTERM', (err) => {
     if (err) return res.status(500).json({ error: String(err) });
@@ -193,8 +319,8 @@ app.post('/api/projects/:id/stop', (req, res) => {
   });
 });
 
-// ---- Live logs (SSE) ----
-app.get('/api/projects/:id/logs', (req, res) => {
+// ---- Live logs (SSE, per command) ----
+app.get('/api/projects/:id/commands/:cid/logs', (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -203,18 +329,17 @@ app.get('/api/projects/:id/logs', (req, res) => {
   });
   if (res.flushHeaders) res.flushHeaders();
 
-  const entry = sessions.get(req.params.id);
-  if (!entry) {
+  const key = sk(req.params.id, req.params.cid);
+  const entry = sessions.get(key);
+  if (entry) {
+    for (const line of entry.logs) res.write(`data: ${JSON.stringify(line)}\n\n`);
+  } else {
     res.write(`data: ${JSON.stringify({ stream: 'sys', text: '(no session yet — press Run)' })}\n\n`);
-    // keep the connection open so the client can retry cheaply
-    const keep = setInterval(() => res.write(': ping\n\n'), 15000);
-    req.on('close', () => clearInterval(keep));
-    return;
   }
-  for (const line of entry.logs) res.write(`data: ${JSON.stringify(line)}\n\n`);
-  entry.clients.add(res);
+  const subs = subsFor(key);
+  subs.add(res);
   const keep = setInterval(() => res.write(': ping\n\n'), 15000);
-  req.on('close', () => { entry.clients.delete(res); clearInterval(keep); });
+  req.on('close', () => { subs.delete(res); clearInterval(keep); });
 });
 
 // ---- Force-free a port ----
@@ -239,15 +364,6 @@ app.post('/api/scan', (req, res) => {
   const found = [];
   const seen = new Set();
 
-  function suggestFromPackage(dir) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-      const s = pkg.scripts || {};
-      const cmd = s.dev ? 'npm run dev' : s.start ? 'npm start' : s.serve ? 'npm run serve' : 'npm install';
-      return { name: pkg.name || path.basename(dir), cmd };
-    } catch { return { name: path.basename(dir), cmd: 'npm run dev' }; }
-  }
-
   function walk(dir, depth) {
     if (depth > 4 || found.length > 200) return;
     let entries = [];
@@ -257,11 +373,11 @@ app.post('/api/scan', (req, res) => {
     const csproj = files.find(f => f.endsWith('.csproj'));
     if (hasPkg && !seen.has(dir)) {
       seen.add(dir);
-      const meta = suggestFromPackage(dir);
-      found.push({ name: meta.name, cwd: dir, cmd: meta.cmd, port: null });
+      const meta = primaryCommands(dir) || { name: path.basename(dir), commands: [{ label: 'dev', cmd: 'npm run dev', port: null }] };
+      found.push({ name: meta.name, cwd: dir, commands: meta.commands });
     } else if (csproj && !seen.has(dir)) {
       seen.add(dir);
-      found.push({ name: path.basename(csproj, '.csproj'), cwd: dir, cmd: 'dotnet run', port: null });
+      found.push({ name: path.basename(csproj, '.csproj'), cwd: dir, commands: [{ label: 'dotnet run', cmd: 'dotnet run', port: null }] });
     }
     // Don't descend into a project's own subtree once matched (keeps it clean).
     if (hasPkg || csproj) return;
@@ -285,12 +401,15 @@ function shutdown() {
   const alive = [...sessions.values()].filter(s => s.alive && s.proc && s.proc.pid);
   if (alive.length === 0) process.exit(0);
   let pending = alive.length;
-  console.log(`\n  Stopping ${pending} running project(s)…`);
+  console.log(`\n  Stopping ${pending} running command(s)…`);
   for (const s of alive) treeKill(s.proc.pid, 'SIGTERM', () => { if (--pending === 0) process.exit(0); });
   setTimeout(() => process.exit(0), 4000).unref();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// Persist any legacy registry entries in the new normalized shape on startup.
+try { saveRegistry(loadRegistry()); } catch {}
 
 buildClient()
   .then(() => {

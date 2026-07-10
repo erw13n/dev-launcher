@@ -19,10 +19,39 @@
 
 * { box-sizing: border-box; }
 
+/* thin, subtle scrollbars for scrollable panels */
+.modal, .logs, .cands, .cmd-rows {
+  scrollbar-width: thin;                       /* Firefox */
+  scrollbar-color: var(--line) transparent;
+}
+.modal::-webkit-scrollbar,
+.logs::-webkit-scrollbar,
+.cands::-webkit-scrollbar,
+.cmd-rows::-webkit-scrollbar { width: 7px; height: 7px; }
+.modal::-webkit-scrollbar-track,
+.logs::-webkit-scrollbar-track,
+.cands::-webkit-scrollbar-track,
+.cmd-rows::-webkit-scrollbar-track { background: transparent; }
+.modal::-webkit-scrollbar-thumb,
+.logs::-webkit-scrollbar-thumb,
+.cands::-webkit-scrollbar-thumb,
+.cmd-rows::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 20px;
+}
+.modal::-webkit-scrollbar-thumb:hover,
+.logs::-webkit-scrollbar-thumb:hover,
+.cands::-webkit-scrollbar-thumb:hover,
+.cmd-rows::-webkit-scrollbar-thumb:hover { background: #3a3f4c; }
+
 body {
   margin: 0;
-  background:
+  min-height: 100vh;
+  background-color: var(--ink);
+  background-image:
     radial-gradient(1200px 600px at 50% -200px, #1c2028 0%, var(--ink) 60%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
@@ -96,13 +125,59 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .strip.running { border-color: #3d3524; }
 
-.strip-row {
+/* project header */
+.proj-head {
   display: grid;
-  grid-template-columns: 16px 1fr auto auto;
+  grid-template-columns: 16px 1fr auto;
   align-items: center;
   gap: 16px;
-  padding: 15px 18px;
+  padding: 14px 18px;
 }
+.run-badge {
+  margin-left: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border: 1px solid rgba(224,161,60,.35);
+  padding: 1px 7px;
+  border-radius: 20px;
+  vertical-align: middle;
+}
+
+/* command list within a project */
+.cmd-list { border-top: 1px solid var(--line-soft); }
+.cmd-row { border-top: 1px solid var(--line-soft); }
+.cmd-row:first-child { border-top: none; }
+.cmd-line {
+  display: grid;
+  grid-template-columns: 12px 1fr auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 18px 11px 20px;
+}
+.cmd-row.running { background: rgba(224,161,60,.045); }
+.cmd-identity { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.cmd-label { font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+.cmd-text {
+  font-family: var(--mono);
+  color: var(--amber);
+  font-size: 12px;
+  opacity: .85;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lamp.sm { width: 9px; height: 9px; }
+
+/* compact action buttons on each command row */
+.cmd-line .actions button { padding: 5px 12px; font-size: 12px; }
+.cmd-line .actions .iconbtn { padding: 5px 9px; }
+
+.no-cmds { padding: 14px 20px; color: var(--muted); font-size: 13px; }
+.linkbtn {
+  background: none; border: none; padding: 0;
+  color: var(--amber); font-size: 13px; text-decoration: underline; cursor: pointer;
+}
+.linkbtn:hover { background: none; }
 
 /* status lamp */
 .lamp {
@@ -215,9 +290,52 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   width: 100%; max-width: 480px;
   padding: 22px;
   box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
 }
+.modal.lg { max-width: 620px; }
 .modal h2 { margin: 0 0 4px; font-size: 16px; letter-spacing: .02em; }
 .modal .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+.modal .hint.tiny { font-size: 11.5px; margin: 8px 0 0; }
+button.small { padding: 5px 10px; font-size: 12px; }
+
+/* commands editor */
+.cmds-editor {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px;
+  background: rgba(0,0,0,.15);
+}
+.cmds-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.cmds-head label { font-size: 12px; color: var(--muted); }
+.pm-tag {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border: 1px solid rgba(224,161,60,.35);
+  padding: 1px 7px;
+  border-radius: 20px;
+}
+.cmds-tools { display: flex; gap: 8px; }
+.cmd-rows { max-height: 42vh; overflow-y: auto; padding-right: 4px; }
+.cmd-edit { display: grid; grid-template-columns: 110px 1fr 70px 32px; gap: 8px; margin-bottom: 8px; }
+.cmd-edit:last-of-type { margin-bottom: 0; }
+.cmd-edit input {
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 9px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.cmd-edit input:focus { outline: none; border-color: var(--amber); }
+.cmd-edit .ce-label { color: var(--text); }
+.cmd-edit .iconbtn { padding: 0; color: var(--muted); }
 .field { margin-bottom: 13px; }
 .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 .field input {
@@ -233,6 +351,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .field input:focus { outline: none; border-color: var(--amber); }
 .field.row2 { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.modal-actions .remove { margin-right: auto; }
 
 /* scan results */
 .cands { max-height: 300px; overflow-y: auto; margin: 6px 0 4px; }
@@ -254,9 +373,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .toast.err { border-color: var(--red); }
 
 @media (max-width: 620px) {
-  .strip-row { grid-template-columns: 16px 1fr; row-gap: 12px; }
-  .port { grid-column: 2; justify-self: start; }
-  .actions { grid-column: 2; }
+  .proj-head { grid-template-columns: 16px 1fr auto; }
+  .cmd-line { grid-template-columns: 12px 1fr; row-gap: 10px; }
+  .cmd-line .port { grid-column: 2; justify-self: start; }
+  .cmd-line .actions { grid-column: 2; }
+  .cmd-edit { grid-template-columns: 1fr 60px 32px; }
+  .cmd-edit .ce-cmd { grid-column: 1 / -1; }
   .masthead { flex-direction: column; align-items: flex-start; }
 }
 
