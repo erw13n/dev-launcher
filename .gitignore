@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Lockfiles
+package-lock.json
+pnpm-lock.yaml
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Build output (UI is bundled in-memory at startup)
+public/bundle.js
+dist/
+build/
+
+# Runtime / OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+.env.local
