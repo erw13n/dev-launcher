@@ -1,8 +1,8 @@
 [
   {
-    "id": "alpinewebapp",
-    "name": "AlpineWebApp",
-    "cwd": "D:\\Alpine\\DEVELOPMENT\\AlpineWebApp",
+    "id": "my-webapp",
+    "name": "MyWebApp",
+    "cwd": "D:\\DEV\\MyWebApp",
     "commands": [
       {
         "id": "dev",
@@ -14,103 +14,6 @@
         "id": "build",
         "label": "build",
         "cmd": "npm run build",
-        "port": null
-      }
-    ]
-  },
-  {
-    "id": "ls-law-saas",
-    "name": "Ls-Law-Saas",
-    "cwd": "M:\\LUHUT\\LsLaw\\ls-law-saas",
-    "commands": [
-      {
-        "id": "dev",
-        "label": "dev",
-        "cmd": "pnpm dev",
-        "port": null
-      },
-      {
-        "id": "dev-server",
-        "label": "dev:server",
-        "cmd": "pnpm dev:server",
-        "port": null
-      },
-      {
-        "id": "dev-client",
-        "label": "dev:client",
-        "cmd": "pnpm dev:client",
-        "port": null
-      },
-      {
-        "id": "build",
-        "label": "build",
-        "cmd": "pnpm build",
-        "port": null
-      },
-      {
-        "id": "start",
-        "label": "start",
-        "cmd": "pnpm start",
-        "port": null
-      },
-      {
-        "id": "start-migrate",
-        "label": "start:migrate",
-        "cmd": "pnpm start:migrate",
-        "port": null
-      },
-      {
-        "id": "start-seed-admin",
-        "label": "start:seed-admin",
-        "cmd": "pnpm start:seed-admin",
-        "port": null
-      },
-      {
-        "id": "check",
-        "label": "check",
-        "cmd": "pnpm check",
-        "port": null
-      },
-      {
-        "id": "db-generate",
-        "label": "db:generate",
-        "cmd": "pnpm db:generate",
-        "port": null
-      },
-      {
-        "id": "db-migrate",
-        "label": "db:migrate",
-        "cmd": "pnpm db:migrate",
-        "port": null
-      },
-      {
-        "id": "db-push",
-        "label": "db:push",
-        "cmd": "pnpm db:push",
-        "port": null
-      },
-      {
-        "id": "db-studio",
-        "label": "db:studio",
-        "cmd": "pnpm db:studio",
-        "port": null
-      },
-      {
-        "id": "db-seed-admin",
-        "label": "db:seed-admin",
-        "cmd": "pnpm db:seed-admin",
-        "port": null
-      },
-      {
-        "id": "db-seed-corpus",
-        "label": "db:seed-corpus",
-        "cmd": "pnpm db:seed-corpus",
-        "port": null
-      },
-      {
-        "id": "db-seed-templates",
-        "label": "db:seed-templates",
-        "cmd": "pnpm db:seed-templates",
         "port": null
       }
     ]
