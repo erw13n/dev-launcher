@@ -27,3 +27,6 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# Registry
+registry.json
