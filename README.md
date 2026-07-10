@@ -16,7 +16,7 @@ npm start
 Then open **http://localhost:9000**. (Change with `PORT=9001 npm start`.)
 
 The UI (React) is bundled locally with esbuild on startup — no CDN, so it works
-offline. If you edit `public/app.jsx`, restart the server to rebuild the bundle.
+offline. If you edit the UI source under `src/`, restart the server to rebuild the bundle.
 
 ## Use it
 

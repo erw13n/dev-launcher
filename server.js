@@ -13,11 +13,11 @@ app.use(express.json());
 let clientBundle = '// UI not built yet';
 async function buildClient() {
   const result = await esbuild.build({
-    entryPoints: [path.join(__dirname, 'public', 'app.jsx')],
+    entryPoints: [path.join(__dirname, 'src', 'main.tsx')],
     bundle: true,
     write: false,
     format: 'iife',
-    loader: { '.jsx': 'jsx' },
+    loader: { '.tsx': 'tsx', '.ts': 'ts' },
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   clientBundle = result.outputFiles[0].text;
@@ -83,6 +83,7 @@ function normalizeProject(p, taken) {
     favorite: !!p.favorite,
     hidden: !!p.hidden,
     collapsed: !!p.collapsed,
+    hasNodeModules: !!p.hasNodeModules,
   };
 }
 function loadRegistry() {
@@ -178,8 +179,18 @@ app.get('/api/projects', async (req, res) => {
   const ports = [...new Set(list.flatMap(p => p.commands.map(c => c.port).filter(Boolean)))];
   const busy = new Map(await Promise.all(ports.map(async pt => [pt, await isPortInUse(pt)])));
 
+  // Keep the persisted node_modules flag in sync with the filesystem, but only
+  // write registry.json back when something actually changed.
+  let dirty = false;
+  for (const p of list) {
+    const has = fs.existsSync(path.join(p.cwd, 'node_modules'));
+    if (p.hasNodeModules !== has) { p.hasNodeModules = has; dirty = true; }
+  }
+  if (dirty) saveRegistry(list);
+
   const out = list.map(p => ({
     ...p,
+    docs: listDocs(p.cwd),
     commands: p.commands.map(c => {
       const key = sk(p.id, c.id);
       const running = isRunning(key);
@@ -251,6 +262,83 @@ app.delete('/api/projects/:id', (req, res) => {
   }
   saveRegistry(list.filter(x => x.id !== p.id));
   res.json({ ok: true });
+});
+
+// List Markdown files in a project's root folder (README first).
+function listDocs(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isFile() && /\.md$/i.test(e.name))
+      .map(e => e.name)
+      .sort((a, b) => {
+        const ar = a.toLowerCase() === 'readme.md', br = b.toLowerCase() === 'readme.md';
+        return ar && !br ? -1 : br && !ar ? 1 : a.localeCompare(b);
+      })
+      .slice(0, 25);
+  } catch { return []; }
+}
+
+// Read one Markdown file from a project's root (raw content).
+app.get('/api/projects/:id/doc', (req, res) => {
+  const list = loadRegistry();
+  const p = findProject(list, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const file = String(req.query.file || '');
+  // Safety: a .md file directly inside cwd — no path segments, no traversal.
+  if (!/\.md$/i.test(file) || file !== path.basename(file)) {
+    return res.status(400).json({ error: 'bad_file' });
+  }
+  const full = path.join(p.cwd, file);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: 'not_found' });
+  try {
+    res.json({ file, content: fs.readFileSync(full, 'utf8') });
+  } catch (e) {
+    res.status(500).json({ error: 'read_failed', detail: String(e && e.message ? e.message : e) });
+  }
+});
+
+// Delete node_modules inside a project's folder to reclaim space.
+app.post('/api/projects/:id/obsolete', (req, res) => {
+  const list = loadRegistry();
+  const p = findProject(list, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  // Don't yank the deps out from under a running dev server.
+  if (p.commands.some(c => isRunning(sk(p.id, c.id)))) {
+    return res.status(409).json({ error: 'running', detail: 'Stop this project’s commands before cleaning.' });
+  }
+  const target = path.join(p.cwd, 'node_modules');
+  // Safety: only ever a folder literally named node_modules directly under cwd.
+  if (path.basename(target) !== 'node_modules' || !fs.existsSync(target)) {
+    return res.json({ ok: true, removed: false, detail: 'No node_modules folder to clean.' });
+  }
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    p.hasNodeModules = false;
+    saveRegistry(list);
+    res.json({ ok: true, removed: true });
+  } catch (e) {
+    res.status(500).json({ error: 'rm_failed', detail: String(e && e.message ? e.message : e) });
+  }
+});
+
+// Open a project's folder in the OS file manager.
+app.post('/api/projects/:id/open', (req, res) => {
+  const list = loadRegistry();
+  const p = findProject(list, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!fs.existsSync(p.cwd)) return res.status(400).json({ error: 'bad_cwd', detail: `Folder not found: ${p.cwd}` });
+  const cmd = process.platform === 'win32' ? 'explorer.exe'
+    : process.platform === 'darwin' ? 'open'
+    : 'xdg-open';
+  try {
+    // Fire and forget — explorer.exe returns a non-zero exit code even on success.
+    const child = spawn(cmd, [p.cwd], { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'open_failed', detail: String(e && e.message ? e.message : e) });
+  }
 });
 
 // Detect commands in a folder (for the Add/Edit form).
@@ -380,7 +468,7 @@ app.post('/api/scan', (req, res) => {
   const seen = new Set();
 
   function walk(dir, depth) {
-    if (depth > 4 || found.length > 200) return;
+    if (depth > 4 || found.length > 400) return;
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     const files = entries.filter(e => e.isFile()).map(e => e.name);
