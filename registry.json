@@ -1,5 +1,3 @@
 [
-  { "id": "novareport", "name": "NovaReport", "cwd": "C:\\dev\\NovaReport", "cmd": "npm run dev", "port": 5173 },
-  { "id": "webqms", "name": "WebQMS", "cwd": "C:\\dev\\WebQMS", "cmd": "npm run dev", "port": 5173 },
-  { "id": "sagelink", "name": "SageLink", "cwd": "C:\\dev\\SageLink", "cmd": "dotnet run", "port": 5000 }
+  { "id": "my-app", "name": "MyApp", "cwd": "C:\\dev\\my-app", "cmd": "npm run dev", "port": 5173 }
 ]
