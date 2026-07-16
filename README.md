@@ -55,12 +55,3 @@ offline. If you edit the UI source under `src/`, restart the server to rebuild t
 Projects live in `registry.json` — plain text, edit it directly if you prefer.
 Older single-command registries are migrated to the new command-list shape
 automatically on startup.
-
-## Notes for your setup
-
-- **Force-free port** uses `netstat` + `taskkill` on Windows, `lsof` + `kill`
-  elsewhere. No admin rights needed for your own processes.
-- **COM/STA** Windows Services behave best as *real* services.
-  For those, set the command to `sc start SageLink` (or `net start …`) instead of
-  `dotnet run`, so the launcher just toggles the service.
-- This is a dev tool with no auth. Keep it bound to localhost; don't expose it.
